@@ -5,19 +5,6 @@ Sync Django migrations to match the dev branch, then checkout dev.
 Use when on a feature branch with migrations you want to discard before
 switching back to dev. Rolls back the database to the migration state on dev,
 then checks out the dev branch.
-
-Usage (from your Django project directory; run from PyPI or GitHub):
-    uvx django-sync-migrations
-    uvx django-sync-migrations --dry-run
-    uvx django-sync-migrations --branch develop
-    uvx django-sync-migrations --skip-checkout
-
-From GitHub without PyPI:
-    uvx --from git+https://github.com/sponrad/django-sync-migrations django-sync-migrations
-
-Requires Django and a reachable database for the migrate step. When run via uvx,
-manage.py is executed with your project's .venv Python if present, otherwise
-the current interpreter.
 """
 
 import argparse
