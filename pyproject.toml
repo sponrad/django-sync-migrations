@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "django-sync-migrations"
-version = "0.2.0"
+version = "0.2.1"
 description = "Sync Django migrations to match the dev branch, then checkout dev."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,3 +13,7 @@ license-files = ["LICEN[CS]E*"]
 
 [project.scripts]
 django-sync-migrations = "django_sync_migrations:main"
+
+[project.urls]
+Homepage = "https://github.com/sponrad/django-sync-migrations"
+Issues = "https://github.com/sponrad/django-sync-migrations/issues"
