@@ -11,9 +11,6 @@
 From the repo root:
 
 ```bash
-# Bump version (optional; or edit pyproject.toml by hand)
-uv version --bump patch
-
 # Build
 uv build
 

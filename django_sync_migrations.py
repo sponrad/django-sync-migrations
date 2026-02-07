@@ -22,6 +22,7 @@ the current interpreter.
 
 import argparse
 import importlib
+import json
 import os
 import re
 import subprocess
@@ -68,49 +69,64 @@ def get_manage_py_python(project_root: Path) -> str:
     return sys.executable
 
 
-def get_installed_app_labels(project_root: Path) -> frozenset[str] | None:
+def get_installed_app_dirs(project_root: Path) -> frozenset[str] | None:
     """
-    Load Django settings and extract app labels from INSTALLED_APPS.
-    Returns None if settings can't be loaded.
+    Get the set of app directory names that are in INSTALLED_APPS.
+    Only these apps' migrations are reset; in-repo apps not in INSTALLED_APPS (e.g. nebula) are skipped.
+    Uses first segment of each INSTALLED_APPS entry (e.g. "booktalk" from "booktalk.apps.BooktalkConfig").
     """
     manage_py = project_root / "manage.py"
     if not manage_py.exists():
         return None
 
-    # Resolve DJANGO_SETTINGS_MODULE from manage.py
+    def app_paths_from_module(settings_module) -> list[str] | None:
+        paths = []
+        for app in getattr(settings_module, "INSTALLED_APPS", []):
+            if isinstance(app, str):
+                paths.append(app)
+            else:
+                path = getattr(app, "label", None) or getattr(app, "name", "")
+                if path:
+                    paths.append(path)
+        return paths if paths else None
+
+    # Try importing settings (fast, can fail if settings have side effects)
     content = manage_py.read_text()
     match = re.search(
         r"setdefault\s*\(\s*['\"]DJANGO_SETTINGS_MODULE['\"]\s*,\s*['\"]([^'\"]+)['\"]",
         content,
     )
-    if not match:
-        return None
+    if match:
+        project_root_str = str(project_root.resolve())
+        if project_root_str not in sys.path:
+            sys.path.insert(0, project_root_str)
+        try:
+            settings_module = importlib.import_module(match.group(1))
+            paths = app_paths_from_module(settings_module)
+            if paths:
+                return frozenset(p.split(".")[0] for p in paths if p)
+        except Exception:
+            pass
 
-    settings_module_name = match.group(1)
-    project_root_str = str(project_root.resolve())
-    if project_root_str not in sys.path:
-        sys.path.insert(0, project_root_str)
-
+    # Fallback: run manage.py shell so Django loads settings
+    python_exe = get_manage_py_python(project_root)
+    code = "import json; from django.conf import settings; apps = [x if isinstance(x, str) else (getattr(x, 'label', None) or getattr(x, 'name', str(x))) for x in settings.INSTALLED_APPS]; print(json.dumps(apps))"
     try:
-        settings_module = importlib.import_module(settings_module_name)
-    except Exception:
-        return None
+        result = subprocess.run(
+            [python_exe, str(manage_py), "shell", "-c", code],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            paths = json.loads(result.stdout.strip())
+            if paths:
+                return frozenset(p.split(".")[0] for p in paths if p)
+    except (json.JSONDecodeError, subprocess.TimeoutExpired, FileNotFoundError):
+        pass
 
-    labels = set()
-    for app in getattr(settings_module, "INSTALLED_APPS", []):
-        if isinstance(app, str):
-            app_path = app
-        else:
-            app_path = getattr(app, "label", None) or getattr(app, "name", "")
-            if not app_path:
-                continue
-        labels.add(app_path)
-        labels.add(app_path.replace(".", "/"))
-        parts = app_path.split(".")
-        if parts:
-            labels.add(parts[0])
-            labels.add(parts[-1])
-    return frozenset(labels) if labels else None
+    return None
 
 
 def get_migration_targets(
@@ -237,10 +253,10 @@ def main() -> int:
         print("(dry run - no changes will be made)")
     print()
 
-    # Find migrations to reset
-    allowed_labels = get_installed_app_labels(project_root)
+    # Find migrations to reset: only apps in INSTALLED_APPS that have migrations in the repo
+    allowed_labels = get_installed_app_dirs(project_root)
     if not allowed_labels:
-        print("WARNING: Could not parse INSTALLED_APPS. Including all repo apps.")
+        print("WARNING: Could not load INSTALLED_APPS. Including all repo apps.")
 
     targets = get_migration_targets(args.branch, repo_root, allowed_labels)
 
