@@ -1,6 +1,8 @@
 # django-sync-migrations
 
-Sync Django migrations to match the dev branch, then checkout dev. Use when on a feature branch with migrations you want to discard before switching back to dev.
+From a feature branch, sync Django migrations to match the dev branch, then checkout dev. Use when on a feature branch with migrations you want to discard before switching back to dev.
+
+A time saver when you are doing a lot of reviews of Django code and find yourself undoing feature branch migrations to match the base branch before you switch back to it.
 
 ## Install
 
@@ -10,13 +12,11 @@ Sync Django migrations to match the dev branch, then checkout dev. Use when on a
 pip install django-sync-migrations
 ```
 
-WIP Or without installing (requires [uv](https://docs.astral.sh/uv/)):
+Or without installing (requires [uv](https://docs.astral.sh/uv/)):
 
 ```bash
 uvx django-sync-migrations
 ```
-
-> **Note:** `uvx` install is not working currently (the tool can’t see your project’s Django/settings when run in uv’s isolated env). Trying to figure this out.
 
 ## Run
 

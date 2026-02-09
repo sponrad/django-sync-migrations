@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 
-def git_cmd(args: list[str], cwd: Path = None) -> str | None:
+def git_cmd(args: list[str], cwd: Path | None = None) -> str | None:
     """Run git command and return stdout, or None on error."""
     try:
         result = subprocess.run(
@@ -56,12 +56,16 @@ def get_manage_py_python(project_root: Path) -> str:
     return sys.executable
 
 
-def get_installed_app_dirs(project_root: Path) -> frozenset[str] | None:
+def get_installed_app_dirs(project_root: Path, verbose: bool = False) -> frozenset[str] | None:
     """
     Get the set of app directory names that are in INSTALLED_APPS.
-    Only these apps' migrations are reset; in-repo apps not in INSTALLED_APPS (e.g. nebula) are skipped.
-    Uses first segment of each INSTALLED_APPS entry (e.g. "booktalk" from "booktalk.apps.BooktalkConfig").
+    Only these apps' migrations are reset; in-repo apps not in INSTALLED_APPS are skipped.
+    Uses first segment of each INSTALLED_APPS entry (e.g. "app_name" from "app_name.apps.AppConfig").
     """
+    def _log(msg: str) -> None:
+        if verbose:
+            print(msg)
+
     manage_py = project_root / "manage.py"
     if not manage_py.exists():
         return None
@@ -91,27 +95,72 @@ def get_installed_app_dirs(project_root: Path) -> frozenset[str] | None:
             settings_module = importlib.import_module(match.group(1))
             paths = app_paths_from_module(settings_module)
             if paths:
+                _log("INSTALLED_APPS: using direct settings import")
                 return frozenset(p.split(".")[0] for p in paths if p)
         except Exception:
-            pass
+            _log("INSTALLED_APPS: direct import failed, trying manage.py shell")
 
-    # Fallback: run manage.py shell so Django loads settings
+    # Fallback: run Python code directly with Django setup
     python_exe = get_manage_py_python(project_root)
-    code = "import json; from django.conf import settings; apps = [x if isinstance(x, str) else (getattr(x, 'label', None) or getattr(x, 'name', str(x))) for x in settings.INSTALLED_APPS]; print(json.dumps(apps))"
+
+    # Try using manage.py shell
+    shell_code = "import json; from django.conf import settings; apps = [x if isinstance(x, str) else (getattr(x, 'label', None) or getattr(x, 'name', str(x))) for x in settings.INSTALLED_APPS]; print(json.dumps(apps))"
     try:
         result = subprocess.run(
-            [python_exe, str(manage_py), "shell", "-c", code],
+            [python_exe, str(manage_py), "shell", "-c", shell_code],
             cwd=project_root,
             capture_output=True,
             text=True,
             timeout=30,
         )
         if result.returncode == 0 and result.stdout.strip():
-            paths = json.loads(result.stdout.strip())
-            if paths:
-                return frozenset(p.split(".")[0] for p in paths if p)
-    except (json.JSONDecodeError, subprocess.TimeoutExpired, FileNotFoundError):
+            try:
+                # The shell command may print extra output, so find the JSON array
+                stdout = result.stdout.strip()
+                # Look for a line starting with '[' - that's our JSON
+                for line in stdout.splitlines():
+                    line = line.strip()
+                    if line.startswith('['):
+                        paths = json.loads(line)
+                        if paths:
+                            _log("INSTALLED_APPS: using manage.py shell")
+                            return frozenset(p.split(".")[0] for p in paths if p)
+                        break
+            except json.JSONDecodeError:
+                pass  # Try alternate method below
+    except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
+
+    # Alternate method: run Python directly with django.setup()
+#     if match:
+#         _log("INSTALLED_APPS: shell failed, trying python -c django.setup()")
+#         setup_code = f"""
+# import sys
+# import os
+# import json
+# os.environ.setdefault('DJANGO_SETTINGS_MODULE', '{match.group(1)}')
+# sys.path.insert(0, '{project_root}')
+# import django
+# django.setup()
+# from django.conf import settings
+# apps = [x if isinstance(x, str) else (getattr(x, 'label', None) or getattr(x, 'name', str(x))) for x in settings.INSTALLED_APPS]
+# print(json.dumps([p for p in apps if p]))
+# """
+#         try:
+#             result = subprocess.run(
+#                 [python_exe, "-c", setup_code],
+#                 cwd=project_root,
+#                 capture_output=True,
+#                 text=True,
+#                 timeout=30,
+#             )
+#             if result.returncode == 0 and result.stdout.strip():
+#                 paths = json.loads(result.stdout.strip())
+#                 if paths:
+#                     _log("INSTALLED_APPS: using python -c django.setup()")
+#                     return frozenset(p.split(".")[0] for p in paths if p)
+#         except (json.JSONDecodeError, subprocess.TimeoutExpired, FileNotFoundError):
+#             pass
 
     return None
 
@@ -201,9 +250,10 @@ def main() -> int:
         help="Only reset migrations, do not checkout branch",
     )
     parser.add_argument(
-        "--force",
+        "--verbose",
+        "-v",
         action="store_true",
-        help="Run migration reset even when already on target branch",
+        help="Print which method was used to load INSTALLED_APPS (to stdout)",
     )
     args = parser.parse_args()
 
@@ -226,7 +276,7 @@ def main() -> int:
         return 1
 
     current_branch = git_cmd(["rev-parse", "--abbrev-ref", "HEAD"])
-    if current_branch == args.branch and not args.force:
+    if current_branch == args.branch:
         print(
             f"Already on {args.branch}. Nothing to do. Use --force to reset anyway."
         )
@@ -241,7 +291,7 @@ def main() -> int:
     print()
 
     # Find migrations to reset: only apps in INSTALLED_APPS that have migrations in the repo
-    allowed_labels = get_installed_app_dirs(project_root)
+    allowed_labels = get_installed_app_dirs(project_root, verbose=args.verbose)
     if not allowed_labels:
         print("WARNING: Could not load INSTALLED_APPS. Including all repo apps.")
 
