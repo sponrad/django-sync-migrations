@@ -7,7 +7,7 @@ packages = ["src"]
 
 [project]
 name = "django-sync-migrations"
-version = "0.2.3"
+version = "0.3.0"
 description = "Sync Django migrations to match the dev branch, then checkout dev."
 readme = "README.md"
 requires-python = ">=3.10"

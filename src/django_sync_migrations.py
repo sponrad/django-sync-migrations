@@ -165,6 +165,61 @@ def get_installed_app_dirs(project_root: Path, verbose: bool = False) -> frozens
     return None
 
 
+def get_all_migration_files_on_branch(
+    branch: str, repo_root: Path, allowed_labels: frozenset[str] | None
+) -> dict[str, set[str]]:
+    """
+    List all migration filenames (e.g. 0001_initial.py) per app on the given branch.
+    Returns {app_label: {"0001_initial.py", "0002_foo.py", ...}, ...}.
+    """
+    output = git_cmd(["ls-tree", "-r", branch, "--name-only"], cwd=repo_root)
+    if not output:
+        return {}
+
+    app_files: dict[str, set[str]] = {}
+    pattern = re.compile(r"^(.+)/migrations/(\d+_.+\.py)$")
+
+    for line in output.splitlines():
+        if "/.venv/" in line or "/site-packages/" in line:
+            continue
+
+        if match := pattern.match(line.strip()):
+            app_dir, filename = match.groups()
+            # Use last path component so we match get_migration_files_in_working_tree (app name)
+            app_label = app_dir.split("/")[-1]
+            if allowed_labels and app_label not in allowed_labels:
+                continue
+            app_files.setdefault(app_label, set()).add(filename)
+
+    return app_files
+
+
+def get_migration_files_in_working_tree(
+    project_root: Path, allowed_labels: frozenset[str] | None
+) -> dict[str, set[str]]:
+    """
+    List all migration filenames per app in the current working tree.
+    Returns {app_label: {"0001_initial.py", ...}, ...}.
+    """
+    app_files: dict[str, set[str]] = {}
+    pattern = re.compile(r"^(\d+_.+\.py)$")
+    migrations_dir = Path("migrations")
+
+    for app_dir in project_root.iterdir():
+        if not app_dir.is_dir():
+            continue
+        if allowed_labels and app_dir.name not in allowed_labels:
+            continue
+        mig_dir = app_dir / migrations_dir
+        if not mig_dir.is_dir():
+            continue
+        for path in mig_dir.iterdir():
+            if path.suffix == ".py" and pattern.match(path.name):
+                app_files.setdefault(app_dir.name, set()).add(path.name)
+
+    return app_files
+
+
 def get_migration_targets(
     branch: str, repo_root: Path, allowed_labels: frozenset[str] | None
 ) -> list[tuple[str, str]]:
@@ -250,12 +305,56 @@ def main() -> int:
         help="Only reset migrations, do not checkout branch",
     )
     parser.add_argument(
+        "--resequence",
+        "-r",
+        action="store_true",
+        help="Check for merge migrations: list feature-only migrations (not on branch), then optionally delete and run makemigrations. Default is dry-run; use --apply to do it (prompt unless --yes).",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="With -r: actually delete migrations and run makemigrations (default with -r is dry-run).",
+    )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="With -r --apply: skip confirmation prompt.",
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
         help="Print which method was used to load INSTALLED_APPS (to stdout)",
     )
     args = parser.parse_args()
+
+    # Resequence flow: detect feature-only migrations, optionally delete and makemigrations
+    if args.resequence:
+        project_root = find_project_root()
+        if not project_root:
+            print(
+                "ERROR: Could not find manage.py. Run from project root or subdirectory.",
+                file=sys.stderr,
+            )
+            return 1
+        repo_root = Path(git_cmd(["rev-parse", "--show-toplevel"], cwd=project_root) or "")
+        if not repo_root or not repo_root.exists():
+            print("ERROR: Not a git repository.", file=sys.stderr)
+            return 1
+        if not git_cmd(["rev-parse", "--verify", args.branch]):
+            print(f"ERROR: Branch '{args.branch}' does not exist.", file=sys.stderr)
+            return 1
+        from .resequence_migrations import run_resequence
+
+        return run_resequence(
+            args.branch,
+            project_root,
+            repo_root,
+            dry_run=not args.apply,
+            yes=args.yes,
+            verbose=args.verbose,
+        )
 
     # Validate environment
     project_root = find_project_root()
